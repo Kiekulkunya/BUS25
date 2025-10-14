@@ -1,0 +1,23 @@
+Prompts (Google AI Studio): 
+
+
+Generate job match maker in matching career from resume and respond to say in short  to highly recommended job Tech category either  "AI & Data Science", Biotech", "AI Engineer", "Software & Cloud Engineering", "Fintech", "E-commerce & Digital Marketing", "Logistics & Supply Chains Tech", "Manufacturing & Robotics",  or "Education & Workforce upskilling", or "unsure".
+
+You must respond to only one category in JS.
+ 
+
+
+
+
+Prompts (Vibe Coding, GPT, Claude, Gemini): 
+
+
+Generate a web app (JS front-end where you upload a resume in any format) for job matchmaker in matching career from resume and respond to say in short to highly recommended job Tech category either "AI & Data Science", Biotech", "AI Engineer", "Software & Cloud Engineering", "Fintech", "E-commerce & Digital Marketing", "Logistics & Supply Chains Tech", "Manufacturing & Robotics", "Education & Workforce upskilling, or "unsure". 
+
+You must respond to only one category and use dark theme color.
+
+1. adding landing page to be the darkthem and title "BUS25 AI Job Matchmaker prototype" 
+2. fix upload should include png or image download too.
+3. you must create "Match" Bottom to friendly use.
+4. You must keep log for read several resume and create dashboard to present recommended areas charts or visualization. 
+5. Also add Reset memory in case we want to remove entire memory
