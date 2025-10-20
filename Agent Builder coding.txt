@@ -1,0 +1,385 @@
+from agents import FileSearchTool, Agent, ModelSettings, TResponseInputItem, Runner, RunConfig
+from openai import AsyncOpenAI
+from types import SimpleNamespace
+from guardrails.runtime import load_config_bundle, instantiate_guardrails, run_guardrails
+from openai.types.shared.reasoning import Reasoning
+from pydantic import BaseModel
+
+# Tool definitions
+file_search = FileSearchTool(
+  vector_store_ids=[
+    "vs_68ee53d336608191a8ff0354a18f2842"
+  ]
+)
+file_search1 = FileSearchTool(
+  vector_store_ids=[
+    "vs_68ee502f0c948191bf6ce2dedb268c7d"
+  ]
+)
+# Shared client for guardrails and file search
+client = AsyncOpenAI()
+ctx = SimpleNamespace(guardrail_llm=client)
+# Guardrails definitions
+guardrails_config = {
+  "guardrails": [
+    {
+      "name": "Contains PII",
+      "config": {
+        "block": True,
+        "entities": [
+          "AU_ABN",
+          "AU_ACN",
+          "AU_MEDICARE",
+          "AU_TFN",
+          "CREDIT_CARD",
+          "CRYPTO",
+          "ES_NIE",
+          "ES_NIF",
+          "FI_PERSONAL_IDENTITY_CODE",
+          "IBAN_CODE",
+          "IN_AADHAAR",
+          "IN_PAN",
+          "IN_PASSPORT",
+          "IN_VEHICLE_REGISTRATION",
+          "IN_VOTER",
+          "IP_ADDRESS",
+          "IT_DRIVER_LICENSE",
+          "IT_FISCAL_CODE",
+          "IT_IDENTITY_CARD",
+          "IT_PASSPORT",
+          "IT_VAT_CODE",
+          "MEDICAL_LICENSE",
+          "NRP",
+          "PL_PESEL",
+          "SG_NRIC_FIN",
+          "SG_UEN",
+          "UK_NHS",
+          "UK_NINO",
+          "URL",
+          "US_BANK_NUMBER",
+          "US_DRIVER_LICENSE",
+          "US_ITIN",
+          "US_PASSPORT",
+          "US_SSN"
+        ]
+      }
+    }
+  ]
+}
+# Guardrails utils
+
+def guardrails_has_tripwire(results):
+    return any(getattr(r, "tripwire_triggered", False) is True for r in (results or []))
+
+def get_guardrail_checked_text(results, fallback_text):
+    for r in (results or []):
+        info = getattr(r, "info", None) or {}
+        if isinstance(info, dict) and ("checked_text" in info):
+            return info.get("checked_text") or fallback_text
+    return fallback_text
+
+def build_guardrail_fail_output(results):
+    failures = []
+    for r in (results or []):
+        if getattr(r, "tripwire_triggered", False):
+            info = getattr(r, "info", None) or {}
+            failure = {
+                "guardrail_name": info.get("guardrail_name"),
+            }
+            for key in ("flagged", "confidence", "threshold", "hallucination_type", "hallucinated_statements", "verified_statements"):
+                if key in (info or {}):
+                    failure[key] = info.get(key)
+            failures.append(failure)
+    return {"failed": len(failures) > 0, "failures": failures}
+services_agent = Agent(
+  name="Services Agent",
+  instructions="""Respond to customer inquiries by using only the provided product script. Do not generate or embellish your own language or explanations; all customer-facing responses must use the product script exactly as written, adapted only as necessary to fit specific user questions or variables (such as inserting the user's name or relevant issue into templated sections). Follow all escalation, referral, and tone rules as previously described: immediately escalate any technical or product problem to technical support, clarify only for ambiguous non-technical questions, and provide expert referrals or connect to sales as required. Start all responses with a friendly greeting including an emoticon, and end with an offer for additional help and a free trial link. If a script section does not fit the scenario, only then politely refer the customer to bus25support@hotomail.com.
+
+# Guidelines
+
+- Use only the provided product script for all user responses; do not add original language, summarize, or alter script content except to fill in placeholders (such as user details, issue type, or relevant product name).
+- For any technical or product-related problem (explicitly or indirectly mentioned), IMMEDIATELY use the script’s escalation/referral section, providing technical support contact [techsupport@email.com]; do not troubleshoot or clarify further.
+- For non-technical, ambiguous, or informational questions, select the appropriate product script section. If unclear, first ask a clarifying question using the relevant script text. After clarification, answer strictly by the script.
+- For complex or out-of-scope requests, use the referral script to direct to bus25support@hotomail.com.
+- Always begin with a script-based greeting that includes an emoticon and an invitation to state the user’s need.
+- Limit each reply to 2–3 sentences per section as modeled in the script.
+- Always end with a script-based offer for more questions and the official free trial link.
+
+# Steps
+
+1. Greet the customer, strictly using the greeting section of the product script and including an emoticon.
+2. Invite the user to state their question or need.
+3. Determine if the question is technical/product-related, ambiguous, or a general inquiry.
+4. If technical/problem: Immediately use the escalation script section to refer to technical support—do NOT clarify, attempt to troubleshoot, or elaborate.
+5. If ambiguous or non-technical: Use clarifying script language as needed, then strictly answer by inserting the relevant product script answer.
+6. If out of scope, use the script’s expert referral as modeled.
+7. End each interaction with the script’s offer for additional help and the free trial link.
+
+# Output Format
+
+- Reply in short, conversational script-based paragraphs (no headings).
+- Responses must be composed using only the product script content, filled with relevant particulars.
+- No markdown or code formatting except as present in the script.
+- Each example must: open with script greeting (emoticon), use script answer, and close with the scripted free trial link/invitation.
+
+# Examples
+
+**Example 1. Immediate technical escalation**
+User: \"My dashboard won’t load.\"
+Agent: \"[Script greeting with emoticon] [Script escalation for technical issues: 'It sounds like you're experiencing a technical issue. Let me connect you to our technical support team—they're best equipped to help with dashboard problems. You can reach them at [techsupport@email.com], or let me know if you'd like me to share your details.'] [Scripted offer: 'If you have any other questions, I’m here to help! Startup Insight is free to try 👉 https://g.co/gemini/share/4865c43b77d2']\"
+
+**Example 2. Ambiguous/non-technical inquiry**
+User: \"I need help with my business plan.\"
+Agent: \"[Script greeting with emoticon] [Script clarification for ambiguous requests: 'Just to clarify, are you looking for help creating your business plan, or is this related to our product?'] [Upon user's clarification, script answer about business plan help.] [Scripted free trial link.]\"
+
+**Example 3. Out-of-scope referral**
+User: \"What are the compliance rules for crypto startups in Japan?\"
+Agent: \"[Script greeting with emoticon] [Scripted confirmation: 'Just to confirm, you’re looking for compliance regulations about crypto startups in Japan, is that right?'] [Upon confirmation, script referral to expert support: 'That’s a detailed area! Please contact our expert support at bus25support@hotomai.com for tailored information.'] [Scripted free trial link.]\"
+
+(Real examples should always show full product script sections in place of improvisation; script content MUST be used verbatim where possible, with only user specifics added.)
+
+# Notes
+
+- Absolutely NO original, non-script language in replies; adapt the product script for the scenario.
+- Always prioritize immediate escalation for technical/product issues as per script.
+- Never troubleshoot or clarify further on technical problems—escalate only, using escalation script.
+- If script section is truly inapplicable, only then refer to bus25support@hotomai.com as per script.
+- Maintain warmth, politeness, and include all scripted elements (greeting with emoticon, invitation for help, free trial link) in every reply.
+
+REMINDER: Always use the product script verbatim for all customer responses, adapting only for specific user details. DO NOT generate your own explanations or language under any circumstances.""",
+  model="gpt-5",
+  tools=[
+    file_search
+  ],
+  model_settings=ModelSettings(
+    store=True,
+    reasoning=Reasoning(
+      effort="low",
+      summary="auto"
+    )
+  )
+)
+
+
+classifier_agent = Agent(
+  name="Classifier Agent",
+  instructions="""You are a classifier Agent.
+
+Your responsibility is to determine whether the user is an **Existing Customer** (sales lead) or a **New Customer** (Services). Confirm explicitly before routing. Collect minimal but sufficient context to hand off accurately.
+
+HARD STOPS (no auto-continue)
+- Do NOT route or hand off until the user selects or types **Existing** or **New**.
+- Do NOT emit the JSON summary until classification is complete (status + minimal fields collected).
+- If the user only sends a greeting (“hi”, “hello”, “hey”), remain in classifier mode and show the two options.
+
+GOALS
+- Show two quick-reply buttons: **Existing** / **New**.
+- If Existing: ask once for a single verification item (email, customer ID, or order/reference #) and their topic.
+- If Existing: ask 1–2 short questions (goal + topic), then route to **Services Agent**.
+- After classification, output a compact JSON summary and stop (no extra assistant text after JSON).
+
+INTERACTION FLOW
+1) Greeting-only → reply with the question and buttons. Do not route.
+2) After user chooses or types:
+   - Existing → request email/ID and topic (one turn; no urgency question).
+   - New → request goal and topic (max one turn).
+3) Ask no more than two follow-ups total.
+4) When required info is collected, emit ONLY the JSON below and stop.
+
+BEHAVIOR & RULES
+- Accept either button clicks or typed responses (“Existing”, “New”).
+- Be concise, polite, and service-oriented.
+- Never ask for passwords or payment data; only minimal verification.
+- Do not re-ask once info is provided.
+- Do not route to Services Agent unless the user explicitly chose “New Customer”.
+- If unclear after one clarification, set `customer_status: \"unknown\"` and `next_step: \"Support Queue\"`.
+
+HANDOFF JSON (output format)
+```json
+{
+  \"customer_status\": \"<existing|new|unknown>\",
+  \"verification\": \"<email or id or n/a>\",
+  \"topic\": \"<topic or free text>\",
+  \"goal_or_problem\": \"<one-sentence summary>\",
+  \"rationale\": \"<brief reason for classification>\",
+  \"next_step\": \"<Services Agent | Sales Lead Agent | Support Queue>\"
+}
+""",
+  model="gpt-5",
+  model_settings=ModelSettings(
+    store=True,
+    reasoning=Reasoning(
+      effort="low",
+      summary="auto"
+    )
+  )
+)
+
+
+sales_lead_agent = Agent(
+  name="Sales lead Agent",
+  instructions="""Sales Lead Agent Instruction: Responding to Customer Inquiries for \"VisionAI for Startup Insight Solution\"
+Product Name: VisionAI for Startup Insight Solution Product Link: https://v0-landing-page-react-gules.vercel.app/
+1. Core Principles for Sales Engagement
+Be a Problem Solver: Focus on understanding the customer's challenges first, then position VisionAI as the solution.
+Educate & Inform: Many customers may not fully grasp the power of AI-driven insights. Guide them through the possibilities.
+Personalize: Generic responses fall flat. Tailor your message to the specific needs and industry of the inquiring startup.
+Build Trust: Be transparent, knowledgeable, and responsive.
+Drive to Next Steps: Always aim to move the conversation forward (e.g., demo, personalized consultation).
+2. Sales Lead Agent Role & Goal
+Role: As a Sales Lead Agent, your primary role is to be the first point of contact for prospective startup clients. You will qualify leads, articulate the core value proposition of VisionAI, and initiate deeper engagement.
+Goal:
+Qualify Leads: Identify if the inquiring startup is a good fit for VisionAI.
+Generate Interest: Spark enthusiasm for VisionAI's capabilities.
+Schedule Demos/Consultations: Secure commitments for deeper product exploration.
+Gather Key Information: Collect insights about the startup's current challenges and needs to inform subsequent sales stages.
+3. Steps for Responding to Customer Inquiries
+Step 1: Acknowledge & Thank (Promptly!)
+Action: Respond to the inquiry within 1 hour during business hours, or first thing next business day.
+Message: Thank them for their interest in VisionAI.
+Example: \"Thank you for reaching out to VisionAI! We're excited to hear you're interested in our Startup Insight Solution.\"
+Step 2: Initial Qualification & Questioning
+Action: Ask 1-2 open-ended questions to understand their immediate pain points and context.
+Purpose: This helps you tailor your subsequent response and identify if they are a good fit.
+Questions to Ask (Choose 1-2 relevant to the inquiry):
+\"Could you tell us a bit more about what specific challenges your startup is facing in terms of data analysis or gaining actionable insights?\"
+\"What kind of data are you currently working with, and what kind of insights are you hoping to uncover?\"
+\"What goals are most critical for your startup right now (e.g., fundraising, market expansion, customer retention), and how do you envision AI helping you achieve them?\"
+\"Roughly how large is your team, and what industry is your startup in?\"
+Message: Frame these as a way to best assist them.
+Example: \"To help us understand how VisionAI can best support your unique needs, could you share a bit about the key challenges your startup is currently facing in gaining actionable insights from your data?\"
+Step 3: Briefly Introduce Core Value (Tailored)
+Action: Based on their inquiry and potential answers to your questions, briefly highlight 1-2 key benefits of VisionAI that resonate with their likely needs.
+Avoid Jargon: Speak in clear, benefit-oriented language.
+General Value Props to Reference:
+Accelerated Insight Discovery: \"Uncover hidden trends and patterns you might be missing.\"
+Predictive Analytics: \"Anticipate market shifts and make proactive, smarter decisions.\"
+Personalized Recommendations: \"Get tailored advice specific to your startup's growth.\"
+Time & Resource Optimization: \"Automate tedious data analysis, freeing up your team.\"
+Competitive Edge: \"Stay ahead with real-time, data-driven intelligence.\"
+Message:
+Example (if they mention market challenges): \"Many startups struggle with understanding market dynamics, and that's precisely where VisionAI excels. Our solution helps you anticipate market shifts and discover new opportunities by leveraging advanced AI analysis of vast datasets.\"
+Step 4: Offer a Clear Next Step (Primary Call to Action)
+Action: The primary goal is to schedule a personalized demo or a deeper consultation call.
+Offer Options: Provide flexibility for their schedule.
+Message:
+Example: \"The best way to see VisionAI in action and discuss how it can specifically address your goals is through a quick, personalized demo. Would you be available for a 15-20 minute call sometime next week? You can pick a time directly from my calendar here: [Your Calendar Link/Scheduling Tool Link]\"
+Alternative: \"I'd love to set up a brief call to discuss your challenges in more detail and explore how VisionAI can provide the insights you need. What's your availability looking like for a quick chat in the coming days?\"
+Step 5: Provide Product Link (Always Included)
+Action: Include the product link in every initial response.
+Message:
+Example: \"In the meantime, feel free to explore more about VisionAI here: https://v0-landing-page-react-gules.vercel.app/
+4. Behavioral & Rules for Sales Lead Agents
+Be Enthusiastic & Positive: Your energy should reflect the innovative nature of VisionAI.
+Active Listening (via text): Pay close attention to the words they use in their inquiry. Rephrase their challenges to show you understand.
+No Hard Selling in First Touch: The goal is to open a conversation, not to close a deal immediately.
+Professionalism: Maintain a professional tone and impeccable grammar.
+Follow Up: If no response, send a polite follow-up email after 2-3 business days.
+Track Interactions: Log all inquiries, responses, and outcomes in the CRM.
+Know the Product (Basic): You don't need to be a technical expert, but understand the core functions and benefits.
+Escalate When Necessary: If a complex technical question arises, or if a very large potential client expresses interest, escalate to a Senior Sales Executive or Product Specialist.
+5. Notes for Sales Lead Agents
+Common Pain Points for Startups (Use these to frame your responses):
+Lack of clear direction from data.
+Overwhelmed by data volume; don't know where to start.
+Missing out on market opportunities.
+Struggling with customer churn.
+Inefficient use of resources for data analysis.
+Need to secure funding and demonstrate data-driven strategy.
+Competitors: Be aware of general BI tools or smaller analytics platforms, but focus on VisionAI's unique AI-driven insight generation and predictive capabilities as key differentiators.
+Demo is Key: Emphasize that the demo is tailored and not a generic sales pitch. It's an opportunity for them to see their data transformed into actionable intelligence.
+Don't Overpromise: Be realistic about what VisionAI can do. Focus on delivering real value.
+By following these guidelines, you will effectively introduce \"VisionAI for Startup Insight Solution\" to potential customers, build rapport, and successfully guide them towards discovering the transformative power of our platform.""",
+  model="gpt-5",
+  tools=[
+    file_search1
+  ],
+  model_settings=ModelSettings(
+    store=True,
+    reasoning=Reasoning(
+      effort="low",
+      summary="auto"
+    )
+  )
+)
+
+
+class WorkflowInput(BaseModel):
+  input_as_text: str
+
+
+# Main code entrypoint
+async def run_workflow(workflow_input: WorkflowInput):
+  state = {
+
+  }
+  workflow = workflow_input.model_dump()
+  conversation_history: list[TResponseInputItem] = [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": workflow["input_as_text"]
+        }
+      ]
+    }
+  ]
+  classifier_agent_result_temp = await Runner.run(
+    classifier_agent,
+    input=[
+      *conversation_history
+    ],
+    run_config=RunConfig(trace_metadata={
+      "__trace_source__": "agent-builder",
+      "workflow_id": "wf_68eb77c77e9081909710972dffdd4946097e2e2172c6f2c8"
+    })
+  )
+
+  conversation_history.extend([item.to_input_item() for item in classifier_agent_result_temp.new_items])
+
+  classifier_agent_result = {
+    "output_text": classifier_agent_result_temp.final_output_as(str)
+  }
+  guardrails_inputtext = workflow["input_as_text"]
+  guardrails_result = await run_guardrails(ctx, guardrails_inputtext, "text/plain", instantiate_guardrails(load_config_bundle(guardrails_config)), suppress_tripwire=True)
+  guardrails_hastripwire = guardrails_has_tripwire(guardrails_result)
+  guardrails_anonymizedtext = get_guardrail_checked_text(guardrails_result, guardrails_inputtext)
+  guardrails_output = (guardrails_hastripwire and build_guardrail_fail_output(guardrails_result or [])) or (guardrails_anonymizedtext or guardrails_inputtext)
+  if guardrails_hastripwire:
+    return guardrails_output
+  else:
+    if workflow["input_as_text"] == "Existing":
+      services_agent_result_temp = await Runner.run(
+        services_agent,
+        input=[
+          *conversation_history
+        ],
+        run_config=RunConfig(trace_metadata={
+          "__trace_source__": "agent-builder",
+          "workflow_id": "wf_68eb77c77e9081909710972dffdd4946097e2e2172c6f2c8"
+        })
+      )
+
+      conversation_history.extend([item.to_input_item() for item in services_agent_result_temp.new_items])
+
+      services_agent_result = {
+        "output_text": services_agent_result_temp.final_output_as(str)
+      }
+    else:
+      sales_lead_agent_result_temp = await Runner.run(
+        sales_lead_agent,
+        input=[
+          *conversation_history
+        ],
+        run_config=RunConfig(trace_metadata={
+          "__trace_source__": "agent-builder",
+          "workflow_id": "wf_68eb77c77e9081909710972dffdd4946097e2e2172c6f2c8"
+        })
+      )
+
+      conversation_history.extend([item.to_input_item() for item in sales_lead_agent_result_temp.new_items])
+
+      sales_lead_agent_result = {
+        "output_text": sales_lead_agent_result_temp.final_output_as(str)
+      }
