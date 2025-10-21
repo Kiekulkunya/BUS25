@@ -1,0 +1,15 @@
+Prompts:
+
+Grade Definitions: Excellent (5): Fully correct, clear, compliant, ideal. Good (4): Mostly correct, minor tone or detail issue. Fair (3): Partially correct, needs improvement or review. Poor (2): Incorrect or weak, but still safe/compliant. Fail (1): Wrong, unsafe, or violates guardrails — stop flow. Instruction: Evaluate the agent’s output and assign a grade (Excellent, Good, Fair, Poor, Fail) based on accuracy, clarity, relevance, and compliance. Include a brief rationale.
+
+Pass
+1. Identify the target output to evaluate: the final Services Agent reply to the user’s technical issue ("My dashboard won’t load").
+Target set: Services Agent final message.
+2. Assess accuracy and relevance: It correctly recognizes a technical/product issue and immediately escalates to technical support with the provided email; no troubleshooting or unnecessary clarification.
+Accurate and fully relevant.
+3. Assess clarity: Message is concise, easy to follow, and polite.
+Clear and succinct.
+4. Assess compliance with provided instructions: Starts with a friendly greeting and emoticon, uses the escalation script content, avoids original troubleshooting, and ends with an offer for additional help plus the free trial link.
+Fully compliant with the script guidelines.
+5. Assign overall grade based on accuracy, clarity, relevance, and compliance, and provide rationale.
+Excellent (5): Fully correct, clear, relevant, and compliant with the escalation and formatting requirements.
